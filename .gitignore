@@ -34,7 +34,7 @@ ENV/
 .env.local
 .env.*.local
 .env
-
+PLAN.md
 # ── IDE ────────────────────────────────────────────────────────────
 .vscode/
 .idea/
