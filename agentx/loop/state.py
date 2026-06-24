@@ -30,6 +30,8 @@ class LoopState:
     primary_language: str | None = None
     repo_context: dict | None = None
     health_score: float | None = None
+    intelligence: object | None = None   # IntelligenceQuery (avoid circular import)
+    last_edited_file: str | None = None
 
     def record_turn(self, observation: str, diff: str = "", error: str = "") -> None:
         self.turn += 1

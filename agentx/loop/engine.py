@@ -82,6 +82,28 @@ async def run_loop(
     _audit = audit  # optional AuditWriter — None = no audit
     tool_specs = _build_tool_specs()
 
+    # Build symbol intelligence (best-effort — failure must not block the loop)
+    _indexer = None
+    _symbol_index = None
+    if repo_context is not None:
+        try:
+            import logging as _logging
+            _log = _logging.getLogger(__name__)
+            from agentx.intelligence.dep_graph import DependencyGraphBuilder
+            from agentx.intelligence.query import IntelligenceQuery
+            from agentx.intelligence.symbol_index import SymbolIndexer
+            _indexer = SymbolIndexer(workspace, repo_context.classification)
+            _symbol_index = _indexer.build()
+            _dep_graph = DependencyGraphBuilder().build(_symbol_index)
+            state.intelligence = IntelligenceQuery(_symbol_index, _dep_graph)
+            _log.info(
+                "Intelligence ready: %d symbols, %d dep edges",
+                len(_symbol_index.symbols),
+                len(_dep_graph.edges),
+            )
+        except Exception:
+            state.intelligence = None
+
     async def _emit_audit(event_type: str, **kwargs) -> None:
         if _audit is None:
             return
@@ -111,6 +133,8 @@ async def run_loop(
                 last_diff=state.last_diff,
                 error_log=state.error_log,
                 repo_context=repo_context,
+                intelligence=state.intelligence,
+                last_edited_file=state.last_edited_file,
             )
 
             try:
@@ -177,6 +201,21 @@ async def run_loop(
                 state.record_turn(error_msg, error=error_msg)
                 yield state
                 continue
+
+            # Post-edit incremental intelligence update
+            if (
+                result.ok
+                and tool_call.tool_name in {"edit_file", "create_file", "write_file"}
+                and _indexer is not None
+                and _symbol_index is not None
+            ):
+                for rel in result.artifacts:
+                    try:
+                        _indexer.update_file(_symbol_index, rel)
+                    except Exception:
+                        pass
+                if result.artifacts:
+                    state.last_edited_file = result.artifacts[-1]
 
             diff = result.data.get("diff", "") if isinstance(result.data, dict) else ""
             state.record_turn(

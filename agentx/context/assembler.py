@@ -14,7 +14,9 @@ def assemble_context(
     token_budget: int = 8_000,
     last_diff: str = "",
     error_log: str = "",
-    repo_context=None,  # agentx.repo.models.RepoContext | None
+    repo_context=None,   # agentx.repo.models.RepoContext | None
+    intelligence=None,   # agentx.intelligence.query.IntelligenceQuery | None
+    last_edited_file: str | None = None,
 ) -> list[Message]:
     """Build the message list sent to the model each turn.
 
@@ -62,7 +64,25 @@ def assemble_context(
 
     # Slot 5: workspace files
     file_budget = TokenBudget(total=budget.remaining // 2)
-    files = select_files(workspace, file_budget)
+    files = select_files(workspace, file_budget, intelligence=intelligence)
+
+    # 5a: impact warning for last edited file
+    if intelligence is not None and last_edited_file is not None:
+        try:
+            impact = intelligence.impact_of_change(last_edited_file)
+            if impact.risk_level in ("medium", "high"):
+                n = len(impact.directly_affected)
+                msg = (
+                    f"[impact] Changing {last_edited_file} affects {n} file(s) directly. "
+                    f"Risk: {impact.risk_level}. Reason: {impact.risk_reason}"
+                )
+                tokens = estimate_tokens(msg)
+                if budget.fits(tokens):
+                    budget.consume(tokens)
+                    messages.append(Message(role=Role.USER, content=msg))
+        except Exception:
+            pass
+
     if files:
         parts = [f"### {rel}\n```\n{content}\n```" for rel, content in files]
         block = "## Workspace Files\n\n" + "\n\n".join(parts)
@@ -70,6 +90,23 @@ def assemble_context(
         if budget.fits(tokens):
             budget.consume(tokens)
             messages.append(Message(role=Role.USER, content=block))
+
+    # 5b: intelligence symbol summaries for each file in context
+    if intelligence is not None and files:
+        summaries: list[str] = []
+        for rel, _ in files:
+            try:
+                summary = intelligence.format_for_context(rel)
+                if summary:
+                    summaries.append(summary)
+            except Exception:
+                pass
+        if summaries:
+            block = "## Symbol Intelligence\n\n" + "\n\n".join(summaries)
+            tokens = estimate_tokens(block)
+            if budget.fits(tokens):
+                budget.consume(tokens)
+                messages.append(Message(role=Role.USER, content=block))
 
     # Slot 6: history
     history_budget = TokenBudget(total=budget.remaining)
